@@ -1,0 +1,46 @@
+[package]
+name = "dev-flaky"
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.85"
+readme = "README.md"
+license = "Apache-2.0"
+
+authors = [
+    "James Gober <me@jamesgober.com>"
+]
+
+description = "Flaky-test detection for Rust. Repeated-run reliability tracking with per-test confidence scoring. Part of the dev-* verification suite."
+
+keywords = [
+    "flaky",
+    "test",
+    "reliability",
+    "verification",
+    "ai-tools"
+]
+
+categories = [
+    "development-tools",
+    "development-tools::testing"
+]
+
+documentation = "https://docs.rs/dev-flaky"
+repository = "https://github.com/jamesgober/dev-flaky"
+homepage = "https://github.com/jamesgober/dev-flaky"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+dev-report = { version = "0.9", path = "../dev-report" }
+
+[dev-dependencies]
+
+[features]
+default = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
