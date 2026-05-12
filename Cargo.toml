@@ -1,6 +1,6 @@
 [package]
 name = "dev-flaky"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,14 +10,14 @@ authors = [
     "James Gober <me@jamesgober.com>"
 ]
 
-description = "Flaky-test detection for Rust. Repeated-run reliability tracking with per-test confidence scoring. Part of the dev-* verification suite."
+description = "Flaky test detection for Rust. Runs cargo test N times and classifies each test as stable / flaky / broken with a reliability score in [0.0, 1.0]. Part of the dev-* verification collection."
 
 keywords = [
     "flaky",
     "test",
     "reliability",
-    "verification",
-    "ai-tools"
+    "retry",
+    "ci"
 ]
 
 categories = [

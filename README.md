@@ -1,21 +1,30 @@
 <h1 align="center">
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
+    <br>
     <strong>dev-flaky</strong>
     <br>
-    <sup><sub>FLAKY-TEST DETECTION FOR RUST</sub></sup>
+    <sup><sub>FLAKY TEST DETECTION FOR RUST</sub></sup>
 </h1>
-
 <p align="center">
     <a href="https://crates.io/crates/dev-flaky"><img alt="crates.io" src="https://img.shields.io/crates/v/dev-flaky.svg"></a>
     <a href="https://crates.io/crates/dev-flaky"><img alt="downloads" src="https://img.shields.io/crates/d/dev-flaky.svg"></a>
-    <a href="https://docs.rs/dev-flaky"><img alt="docs.rs" src="https://docs.rs/dev-flaky/badge.svg"></a>
     <a href="https://github.com/jamesgober/dev-flaky/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/dev-flaky/actions/workflows/ci.yml/badge.svg"></a>
-    <img alt="MSRV" src="https://img.shields.io/badge/msrv-1.85%2B-blue.svg?style=flat-square" title="Rust Version">
+    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85%2B-blue.svg?style=flat-square" title="Rust Version">
+    <a href="https://docs.rs/dev-flaky"><img alt="docs.rs" src="https://docs.rs/dev-flaky/badge.svg"></a>
 </p>
 
 <p align="center">
-    Repeated-run reliability tracking with per-test confidence scoring.<br>
-    Part of the <code>dev-*</code> verification suite.
+    <strong>Run <code>cargo test</code> N times and classify each test as stable, flaky, or broken.</strong> Reliability scoring in <code>[0.0, 1.0]</code>, structured findings.
 </p>
+
+<br>
+
+<div align="center">
+    <strong>Part of the <a href="https://crates.io/crates/dev-tools"><code>dev-*</code></a> verification collection.</strong><br>
+    <sub>Also available as the <code>flaky</code> feature of the <a href="https://crates.io/crates/dev-tools"><code>dev-tools</code></a> umbrella crate &mdash; one dependency, every verification layer.</sub>
+</div>
+
+<br>
 
 ---
 
@@ -164,10 +173,25 @@ enum variants:
 | `examples/threshold.rs`           | `reliability_threshold` + allow-list.                        |
 | `examples/producer.rs`            | `FlakyProducer` (gated by `DEV_FLAKY_EXAMPLE_RUN`).          |
 
-## The `dev-*` suite
+## The `dev-*` collection
 
-See [`dev-tools`](https://github.com/jamesgober/dev-tools) for the
-umbrella crate covering the full suite.
+`dev-flaky` ships independently and is also re-exported by the
+[`dev-tools`](https://crates.io/crates/dev-tools) umbrella crate as
+the `flaky` feature. Sister crates cover the other verification
+dimensions:
+
+- [`dev-report`](https://crates.io/crates/dev-report) &mdash; report schema everything emits
+- [`dev-fixtures`](https://crates.io/crates/dev-fixtures) &mdash; deterministic test fixtures
+- [`dev-bench`](https://crates.io/crates/dev-bench) &mdash; performance and regression detection
+- [`dev-async`](https://crates.io/crates/dev-async) &mdash; async runtime verification
+- [`dev-stress`](https://crates.io/crates/dev-stress) &mdash; stress and soak workloads
+- [`dev-chaos`](https://crates.io/crates/dev-chaos) &mdash; fault injection and recovery testing
+- [`dev-coverage`](https://crates.io/crates/dev-coverage) &mdash; code coverage with regression gates
+- [`dev-security`](https://crates.io/crates/dev-security) &mdash; CVE / license / banned-crate audit
+- [`dev-deps`](https://crates.io/crates/dev-deps) &mdash; unused / outdated dep detection
+- [`dev-ci`](https://crates.io/crates/dev-ci) &mdash; GitHub Actions workflow generator
+- [`dev-fuzz`](https://crates.io/crates/dev-fuzz) &mdash; fuzz testing workflow
+- [`dev-mutate`](https://crates.io/crates/dev-mutate) &mdash; mutation testing
 
 ## Status
 
@@ -184,3 +208,14 @@ the MSRV job in CI.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+
+
+
+<!-- COPYRIGHT
+---------------------------------->
+<div align="center">
+    <br>
+    <h2></h2>
+    Copyright &copy; 2026 James Gober.
+</div>
