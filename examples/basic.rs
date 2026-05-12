@@ -1,14 +1,41 @@
-//! Minimal example: detect flaky tests by repeated runs.
+//! Run the test suite a few times and print the resulting `Report`.
 //!
-//! Run with: `cargo run --example basic`
+//! ```text
+//! cargo run --example basic
+//! ```
+//!
+//! **Important:** invoking this from inside `cargo test` (or from a
+//! working directory where another `cargo` invocation already holds
+//! the target-dir lock) will deadlock. Run it from a checkout of the
+//! crate you actually want to scan for flakiness, e.g.:
+//!
+//! ```text
+//! cd /path/to/your-crate
+//! CARGO_TARGET_DIR=/tmp/flaky-target cargo run --manifest-path /path/to/dev-flaky/Cargo.toml --example basic
+//! ```
 
-use dev_flaky::FlakyRun;
+use dev_flaky::{FlakyError, FlakyRun};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let run = FlakyRun::new("example", "0.1.0").iterations(20);
-    let result = run.execute()?;
-    println!("Flaky tests: {}", result.flaky_count());
+fn main() {
+    let run = FlakyRun::new("example", "0.1.0").iterations(5);
+    let result = match run.execute() {
+        Ok(r) => r,
+        Err(FlakyError::ToolNotInstalled) => {
+            eprintln!("cargo is not on PATH; skipping example.");
+            return;
+        }
+        Err(e) => {
+            eprintln!("flaky run failed: {e}");
+            return;
+        }
+    };
+    println!(
+        "iterations completed: {}, total tests observed: {}, flaky: {}, broken: {}",
+        result.iterations,
+        result.total_count(),
+        result.flaky_count(),
+        result.broken_count()
+    );
     let report = result.into_report();
-    println!("{}", report.to_json()?);
-    Ok(())
+    println!("{}", report.to_json().expect("serialize report"));
 }
