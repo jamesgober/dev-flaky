@@ -9,7 +9,7 @@
     <a href="https://crates.io/crates/dev-flaky"><img alt="crates.io" src="https://img.shields.io/crates/v/dev-flaky.svg"></a>
     <a href="https://crates.io/crates/dev-flaky"><img alt="downloads" src="https://img.shields.io/crates/d/dev-flaky.svg"></a>
     <a href="https://github.com/jamesgober/dev-flaky/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/dev-flaky/actions/workflows/ci.yml/badge.svg"></a>
-    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85%2B-blue.svg?style=flat-square" title="Rust Version">
+    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75%2B-blue.svg?style=flat-square" title="Rust Version">
     <a href="https://docs.rs/dev-flaky"><img alt="docs.rs" src="https://docs.rs/dev-flaky/badge.svg"></a>
 </p>
 
