@@ -9,6 +9,7 @@
   - [`FlakyRun::new`](#flakyrunnew)
   - [`FlakyRun::iterations`](#flakyruniterations)
   - [`FlakyRun::iteration_count`](#flakyruniteration_count)
+  - [Other builder methods](#other-builder-methods)
   - [`FlakyRun::execute`](#flakyrunexecute)
 - [`TestReliability`](#testreliability)
   - [Fields](#testreliability-fields)
@@ -77,13 +78,36 @@ pub fn iteration_count(&self) -> u32
 
 Return the configured iteration count.
 
+### Other builder methods
+
+| Method                              | Effect                                                         |
+|-------------------------------------|----------------------------------------------------------------|
+| `in_dir(dir)`                       | Run `cargo test` from `dir`.                                   |
+| `workspace()`                       | Pass `--workspace`.                                            |
+| `features(list)`                    | Pass `--features <list>`.                                      |
+| `test_filter(substring)`            | Pass the libtest name filter.                                  |
+| `allow(name)` / `allow_all(names)`  | Drop records for these test paths.                             |
+| `reliability_threshold(pct)`        | Classify records below `pct` with no failures as flaky.       |
+| `iteration_timeout(limit)`          | Kill an iteration's `cargo test` process tree after `limit`.   |
+
 ### `FlakyRun::execute`
 
 ```rust
 pub fn execute(&self) -> Result<FlakyResult, FlakyError>
 ```
 
-Run the test suite N times and aggregate per-test pass/fail counts.
+Build the test binaries once (`cargo test --no-run`), then run
+`cargo test --no-fail-fast` N times and aggregate per-test pass/fail
+counts. Ignored tests are not recorded. A compile error is returned
+once as `FlakyError::SubprocessFailed` from the build step.
+
+Only the list of outcome lines after each `running N tests` header is
+parsed; captured test output in the failure details is skipped. A test
+binary that crashes or is killed by `iteration_timeout` counts as a
+failure of the test libtest showed as running, or of a
+`<binary>: test binary did not finish` record when no test was named.
+Tests with the same path in different binaries are kept apart as
+`name [binary]`.
 
 ---
 
@@ -97,8 +121,10 @@ pub struct TestReliability {
 }
 ```
 
-Per-test reliability record. The `name` is the full test path
-(e.g. `crate::module::test_name`).
+Per-test reliability record. The `name` is the full test path as
+libtest prints it (e.g. `module::test_name`), without the
+` - should panic` suffix. When the same path exists in several test
+binaries, the binary is appended: `tests::smoke [app: unittests src/lib.rs]`.
 
 ### TestReliability fields
 
@@ -130,7 +156,7 @@ assert!((t.reliability() - 0.7).abs() < 0.0001);
 pub fn is_stable(&self) -> bool
 ```
 
-`true` when `failures == 0`.
+`true` when `failures == 0` and `passes > 0`.
 
 ### `TestReliability::is_flaky`
 
@@ -146,7 +172,7 @@ pub fn is_flaky(&self) -> bool
 pub fn is_broken(&self) -> bool
 ```
 
-`true` when `passes == 0`.
+`true` when `passes == 0` and `failures > 0`.
 
 ---
 
@@ -158,6 +184,7 @@ pub struct FlakyResult {
     pub version: String,
     pub iterations: u32,
     pub tests: Vec<TestReliability>,
+    pub reliability_threshold_pct: Option<f64>,
 }
 ```
 
@@ -167,8 +194,9 @@ pub struct FlakyResult {
 |--------------|-------------------------|------------------------------------------|
 | `name`       | `String`                | Crate name.                              |
 | `version`    | `String`                | Crate version.                           |
-| `iterations` | `u32`                   | Iterations completed.                    |
-| `tests`      | `Vec<TestReliability>`  | Per-test records.                        |
+| `iterations` | `u32`                   | Iterations that produced test results.   |
+| `tests`      | `Vec<TestReliability>`  | Per-test records, sorted by name.        |
+| `reliability_threshold_pct` | `Option<f64>` | Threshold used for classification. |
 
 ### `FlakyResult::flaky_count`
 
@@ -194,6 +222,7 @@ Broken tests fail.
 
 ```rust
 pub enum FlakyError {
+    ToolNotInstalled,
     SubprocessFailed(String),
     ParseError(String),
 }

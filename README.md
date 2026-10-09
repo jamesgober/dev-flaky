@@ -74,6 +74,7 @@ println!("{}", report.to_json()?);
 | `test_filter(substring)`        | Pass the libtest positional filter (`cargo test <filter>`). |
 | `allow(name)` / `allow_all(iter)` | Suppress known-flaky tests by full test path.             |
 | `reliability_threshold(pct)`    | Demote `Stable` to `Flaky` below this reliability percentage. |
+| `iteration_timeout(limit)`      | Kill an iteration's `cargo test` after `limit` (off by default). |
 
 ## Classification
 
@@ -87,6 +88,45 @@ Each finding emits a `CheckResult` named `flaky::<test>` tagged
 `flaky` + the classification label (`stable` / `flaky` / `broken`),
 with numeric evidence for `reliability_pct`, `passes`, and `failures`.
 
+## How runs are read
+
+- The test binaries are built once with `cargo test --no-run`. A
+  compile error is returned as `FlakyError::SubprocessFailed` right
+  away instead of being retried every iteration.
+- Only the `test <name> ... ok | FAILED | ignored` lines listed after
+  each `running N tests` header are counted. Output that a failing
+  test printed (shown in the failure details) is never parsed as a
+  result. Ignored tests are not recorded.
+- `#[should_panic]` tests are recorded under their plain path (libtest's
+  ` - should panic` suffix is dropped).
+- When two test binaries contain the same test path (for example
+  `tests::smoke` in two workspace crates), each gets its own record
+  with the binary appended: `tests::smoke [app: unittests src/lib.rs]`.
+- A test binary that crashes (abort, stack overflow, segfault) or is
+  killed by `iteration_timeout` counts as a failure of the test libtest
+  showed as running, when it named one. Otherwise the failure is
+  recorded as `<binary>: test binary did not finish`, so a binary that
+  crashes in 1 of 20 iterations shows up as flaky.
+
+## Hanging tests
+
+A test that sometimes deadlocks would block `cargo test` forever. Set
+an iteration timeout to bound each iteration:
+
+```rust
+use std::time::Duration;
+use dev_flaky::FlakyRun;
+
+let run = FlakyRun::new("my-crate", "0.1.0")
+    .iterations(20)
+    .iteration_timeout(Duration::from_secs(120));
+```
+
+When the limit is hit, `cargo test` and the test binary it started are
+killed and the next iteration starts. With a limit above 60 seconds,
+libtest has already named the slow test (`has been running for over 60
+seconds`), so the failure is recorded against that test.
+
 ## Allow-list
 
 ```rust
@@ -98,7 +138,9 @@ let run = FlakyRun::new("my-crate", "0.1.0")
     .allow_all(["integration::slow_test", "net::flaky_endpoint"]);
 ```
 
-Matches the full test path emitted by libtest.
+Matches the full test path emitted by libtest. An entry also covers
+the `name [binary]` records created when the same path exists in
+several test binaries.
 
 ## Reliability threshold
 
@@ -110,12 +152,13 @@ let run = FlakyRun::new("my-crate", "0.1.0")
     .reliability_threshold(99.0);
 ```
 
-With threshold 99.0, a test that passes 99/100 iterations is still
-flagged as `Flaky` even though it had zero failures within that run's
-classification rule. Useful when you want to surface tests that are
-*nearly always* stable but occasionally produce intermittent partial
-failures (when extended with sub-iteration counters in a future
-release).
+The threshold demotes records that have *no* failures but a
+reliability below `pct`. Records built by `execute()` only count passes
+and failures, so any test below 100% already has a failure and is
+`Flaky` or `Broken` regardless of the threshold; today it only affects
+`TestReliability` records you build or edit yourself (for example a
+record with no runs at all). It is there so the classification can be
+made stricter later without an API change.
 
 ## `Producer` integration
 
@@ -202,7 +245,7 @@ the classification policy.
 
 ## Minimum supported Rust version
 
-`1.85` — pinned in `Cargo.toml` via `rust-version` and verified by
+`1.75` — pinned in `Cargo.toml` via `rust-version` and verified by
 the MSRV job in CI.
 
 ## License

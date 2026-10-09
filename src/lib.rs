@@ -29,15 +29,28 @@
 //! | `> 0`      | `> 0`      | Flaky          | Warn    |
 //! | `0`        | `> 0`      | Broken         | Fail    |
 //!
-//! A `reliability_threshold(pct)` builder lets you classify
-//! "mostly-passes" tests as flaky too — e.g. a 99%-passing test still
-//! deserves attention.
+//! Test binaries that crash, and iterations killed by
+//! [`FlakyRun::iteration_timeout`], are recorded as failures too, so a
+//! test that sometimes aborts or hangs shows up as flaky.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
+/// Version of this crate as compiled, taken from its `Cargo.toml`.
+///
+/// Lets tools that bundle this crate, such as the `dev` CLI in
+/// `dev-tools`, report the version that is actually linked.
+///
+/// # Example
+///
+/// ```
+/// assert!(!dev_flaky::VERSION.is_empty());
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use std::path::PathBuf;
+use std::time::Duration;
 
 use dev_report::{CheckResult, Evidence, Report, Severity};
 use serde::{Deserialize, Serialize};
@@ -114,6 +127,7 @@ pub struct FlakyRun {
     test_filter: Option<String>,
     allow_list: Vec<String>,
     reliability_threshold_pct: Option<f64>,
+    iteration_timeout: Option<Duration>,
 }
 
 impl FlakyRun {
@@ -132,6 +146,7 @@ impl FlakyRun {
             test_filter: None,
             allow_list: Vec::new(),
             reliability_threshold_pct: None,
+            iteration_timeout: None,
         }
     }
 
@@ -173,7 +188,10 @@ impl FlakyRun {
     }
 
     /// Suppress a known-flaky test by name. Matches the full test path
-    /// (`module::path::test_name`) as emitted by libtest.
+    /// (`module::path::test_name`) as emitted by libtest, without the
+    /// ` - should panic` suffix libtest adds to `#[should_panic]` tests.
+    /// When the same name exists in several test binaries (see
+    /// [`TestReliability::name`]), the entry suppresses all of them.
     pub fn allow(mut self, name: impl Into<String>) -> Self {
         self.allow_list.push(name.into());
         self
@@ -189,18 +207,38 @@ impl FlakyRun {
         self
     }
 
-    /// Classify tests with reliability *below* `pct` as flaky even
-    /// when they have zero failures across the run. The threshold is
-    /// in `[0.0, 100.0]`.
+    /// Classify tests whose reliability is *below* `pct` as flaky when
+    /// they have no recorded failures. The threshold is clamped to
+    /// `[0.0, 100.0]`.
     ///
-    /// Without this setting, a test only becomes flaky if it has at
-    /// least one failure. With `reliability_threshold(99.0)`, tests
-    /// passing fewer than 99% of iterations are flagged even if all
-    /// iterations technically "passed" (this is a no-op as written;
-    /// it lets the classification stay strict in future revisions
-    /// that account for partial-pass criteria like sub-test runs).
+    /// Records produced by [`execute`](Self::execute) only count passes
+    /// and failures, so a test with no failures is either 100% reliable
+    /// or has no recorded runs, and any test below 100% already has a
+    /// failure and is `Flaky` or `Broken`. In practice the threshold
+    /// therefore only changes the result for [`TestReliability`] records
+    /// built or edited by the caller (for example `passes: 0,
+    /// failures: 0`). It is kept so classification can be made stricter
+    /// without an API change.
     pub fn reliability_threshold(mut self, pct: f64) -> Self {
         self.reliability_threshold_pct = Some(pct.clamp(0.0, 100.0));
+        self
+    }
+
+    /// Kill an iteration's `cargo test` (and the test binary it started)
+    /// once it has run for `limit`, so a hanging test cannot block the
+    /// run forever. Off by default.
+    ///
+    /// The tests that finished before the kill are counted as usual.
+    /// The hanging test is recorded as a failure when libtest named it
+    /// (its `has been running for over 60 seconds` notice, which needs a
+    /// `limit` above 60 s); otherwise the failure is recorded against the
+    /// test binary as `<binary>: test binary did not finish`. The
+    /// remaining iterations still run.
+    ///
+    /// The test binaries are built once before the first iteration
+    /// (`cargo test --no-run`), so `limit` only covers running the tests.
+    pub fn iteration_timeout(mut self, limit: Duration) -> Self {
+        self.iteration_timeout = Some(limit);
         self
     }
 
@@ -216,12 +254,24 @@ impl FlakyRun {
 
     /// Execute the run.
     ///
-    /// Invokes `cargo test --no-fail-fast` `N` times and accumulates
-    /// per-test pass / fail / ignored counters. Subprocess failures
-    /// (no `cargo` on PATH, etc.) surface as
-    /// [`FlakyError::SubprocessFailed`]. Per-iteration test failures
-    /// are the *point* of the run — they don't error out the
-    /// `FlakyRun`.
+    /// Builds the test binaries once with `cargo test --no-run`, then
+    /// invokes `cargo test --no-fail-fast` `N` times and accumulates
+    /// per-test pass / fail counters (ignored tests are not recorded).
+    /// Per-iteration test failures are the *point* of the run; they
+    /// don't error out the `FlakyRun`.
+    ///
+    /// A test binary that crashes (abort, stack overflow, segfault) or
+    /// is killed by [`iteration_timeout`](Self::iteration_timeout) is
+    /// recorded as a failure of the test that was running when libtest
+    /// named one, otherwise as a failure of a
+    /// `<binary>: test binary did not finish` record.
+    ///
+    /// # Errors
+    ///
+    /// - [`FlakyError::ToolNotInstalled`] when `cargo` is not on PATH.
+    /// - [`FlakyError::SubprocessFailed`] when the test binaries do not
+    ///   build (reported once, from the `--no-run` step), or when no
+    ///   iteration produced any libtest output.
     pub fn execute(&self) -> Result<FlakyResult, FlakyError> {
         runner::run(self)
     }
@@ -249,6 +299,10 @@ impl FlakyRun {
     pub(crate) fn reliability_threshold_value(&self) -> Option<f64> {
         self.reliability_threshold_pct
     }
+
+    pub(crate) fn iteration_timeout_value(&self) -> Option<Duration> {
+        self.iteration_timeout
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +312,14 @@ impl FlakyRun {
 /// Per-test reliability record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestReliability {
-    /// Full test path (e.g. `crate::module::test_name`).
+    /// Full test path as printed by libtest (e.g. `module::test_name`,
+    /// or `src/lib.rs - Foo (line 12)` for a doc-test).
+    ///
+    /// When the same path exists in more than one test binary, each
+    /// copy is kept apart and the binary is appended:
+    /// `tests::smoke [app: unittests src/lib.rs]`. A test binary that
+    /// died without a test to blame is recorded as
+    /// `<binary>: test binary did not finish`.
     pub name: String,
     /// Number of iterations in which this test passed.
     pub passes: u32,
@@ -269,11 +330,11 @@ pub struct TestReliability {
 impl TestReliability {
     /// Fraction of runs that passed, in the range `[0.0, 1.0]`.
     pub fn reliability(&self) -> f64 {
-        let total = self.passes + self.failures;
+        let total = u64::from(self.passes) + u64::from(self.failures);
         if total == 0 {
             return 0.0;
         }
-        self.passes as f64 / total as f64
+        f64::from(self.passes) / total as f64
     }
 
     /// Reliability as a percentage in `[0.0, 100.0]`.
@@ -328,9 +389,10 @@ pub struct FlakyResult {
     pub name: String,
     /// Subject version.
     pub version: String,
-    /// Iterations actually completed (may be less than configured if a
-    /// subprocess error stopped the run mid-way; in 0.9.0 we always
-    /// complete the full count).
+    /// Iterations that produced test results. Less than the configured
+    /// count when some iterations failed before any test ran (for
+    /// example `cargo test` itself failed, or the iteration timed out
+    /// before the first test binary started).
     pub iterations: u32,
     /// Per-test reliability records (sorted by `name` for determinism).
     pub tests: Vec<TestReliability>,
@@ -401,7 +463,7 @@ impl FlakyResult {
                 let detail = format!(
                     "{}/{} passed ({:.1}%)",
                     t.passes,
-                    t.passes + t.failures,
+                    u64::from(t.passes) + u64::from(t.failures),
                     reliability_pct
                 );
                 let name = format!("flaky::{}", t.name);
@@ -507,6 +569,24 @@ mod tests {
         let t = t("x", 7, 3);
         assert!((t.reliability() - 0.7).abs() < 1e-9);
         assert!((t.reliability_pct() - 70.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reliability_does_not_overflow_on_huge_counts() {
+        let t = t("x", u32::MAX, u32::MAX);
+        assert!((t.reliability() - 0.5).abs() < 1e-9);
+        let report = FlakyResult {
+            name: "x".into(),
+            version: "0.1.0".into(),
+            iterations: u32::MAX,
+            tests: vec![t],
+            reliability_threshold_pct: None,
+        }
+        .into_report();
+        assert_eq!(
+            report.checks[0].detail.as_deref(),
+            Some("4294967295/8589934590 passed (50.0%)")
+        );
     }
 
     #[test]
@@ -616,8 +696,10 @@ mod tests {
             .test_filter("integration::")
             .allow("known_flaky")
             .allow_all(["a", "b"])
-            .reliability_threshold(99.0);
+            .reliability_threshold(99.0)
+            .iteration_timeout(Duration::from_secs(30));
         assert_eq!(r.iteration_count(), 50);
+        assert_eq!(r.iteration_timeout_value(), Some(Duration::from_secs(30)));
         assert_eq!(r.subject(), "x");
         assert_eq!(r.subject_version(), "0.1.0");
         assert!(r.workspace_flag());

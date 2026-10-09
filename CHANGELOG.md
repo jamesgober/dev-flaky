@@ -7,24 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.2] - 2026-05-18
+## [0.9.2] - 2026-10-09
 
-MSRV rollback to Rust 1.75. Backed off from 1.85 after `dev-fixtures`
-swapped `tempfile` → `mod-tempdir` 1.0 in its own 0.9.5 release,
-eliminating the `getrandom 0.4.2 → edition2024` chain that was the
-sole reason the dev-* collection sat at 1.85. No code changes here;
-this crate's own runtime dependencies have always been
-1.75-compatible.
+libtest parsing and crash/hang handling fixes from a review pass, plus
+the MSRV rollback to Rust 1.75. The rollback follows `dev-fixtures`
+0.9.5 swapping `tempfile` for `mod-tempdir` 1.0, which removed the
+`getrandom 0.4.2 -> edition2024` chain that held the dev-* collection
+at 1.85.
+
+### Added
+
+- `FlakyRun::iteration_timeout(Duration)`, off by default. A hung test
+  used to block the run forever. On expiry the iteration's `cargo test`
+  and the test binary it started are killed (`taskkill /T` on Windows,
+  the process group on Unix), results so far are kept, and the run
+  moves on. A test named by libtest's "running for over 60 seconds"
+  notice is charged with the hang.
+- `VERSION` constant with the crate version as compiled, so tools that
+  bundle this crate can report what is actually linked.
+
+### Fixed
+
+- Output printed by a failing test that looked like `test x ... ok` was
+  counted as a real result. Only the outcome lines after each
+  `running N tests` header are read now.
+- Ignored tests became 0/0 records that showed as passing checks and
+  turned `Flaky` under any threshold. They are no longer recorded.
+- A test with the same path in two test binaries (two workspace crates,
+  two integration-test files) shared one counter, so a broken test plus
+  a stable one came out as flaky. They are kept apart as
+  `name [binary]`; the allow-list still matches the plain name.
+- A test binary that aborted, overflowed its stack or segfaulted was
+  ignored, so a test that sometimes crashed looked stable. The failure
+  is now charged to the test libtest reported as running, or to a
+  `<binary>: test binary did not finish` record.
+- A compile error was retried on every iteration. Test binaries are now
+  built once with `cargo test --no-run`, and a build error is returned
+  straight away as `SubprocessFailed`. Build time also stays out of the
+  iteration timeout.
+- `#[should_panic]` test names kept libtest's ` - should panic` suffix,
+  so allow-list entries did not match.
+- `FlakyResult::iterations` counted iterations that produced no
+  results; it now counts the ones that did, as documented.
+- `reliability()` and the report detail could overflow `u32`; they use
+  `u64` now.
 
 ### Changed
 
-- `rust-version` lowered from `1.85` to `1.75` in `Cargo.toml`.
-- MSRV badge in README updated from `1.85+` to `1.75+`.
+- Error messages name the tool that failed and its exit status.
+- The unused `tempfile` dev-dependency is gone; it kept
+  `cargo +1.75 test` from resolving.
+- `rust-version` lowered from `1.85` to `1.75`. CI's MSRV job now
+  builds on 1.75 against an MSRV-compatible lockfile; it was still
+  pinned to 1.85.
 
-### Notes
+### Documentation
 
-- No code change. No API change. No new dependencies.
-- Library, examples, and tests all build clean on Rust 1.75 (verified).
+- `reliability_threshold` is documented as it actually behaves: in
+  records from `execute`, any test below 100% already has a failure and
+  is `Flaky` or `Broken`, so the threshold only changes the result for
+  records built or edited by the caller.
+- README: new "How runs are read" and "Hanging tests" sections, the
+  builder table lists `iteration_timeout`, MSRV section says 1.75.
+- `docs/API.md`: corrected `is_stable` / `is_broken` rules, added
+  `ToolNotInstalled`, `reliability_threshold_pct` and the builder
+  methods.
 
 [0.9.2]: https://github.com/jamesgober/dev-flaky/releases/tag/v0.9.2
 
