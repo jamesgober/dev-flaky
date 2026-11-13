@@ -101,11 +101,19 @@ Build the test binaries once (`cargo test --no-run`), then run
 counts. Ignored tests are not recorded. A compile error is returned
 once as `FlakyError::SubprocessFailed` from the build step.
 
-Only the list of outcome lines after each `running N tests` header is
-parsed; captured test output in the failure details is skipped. A test
-binary that crashes or is killed by `iteration_timeout` counts as a
-failure of the test libtest showed as running, or of a
+Only the list of outcome lines after each `running N tests` header, up
+to `failures:` or `test result:`, is parsed; captured test output in
+the failure details is skipped. Names in libtest's closing `failures:`
+list count as failures even when their outcome line is missing, and a
+`test result:` failed count above the failures found adds a
+`<binary>: failed tests not named in the output` record. A test binary
+that crashes or is killed by `iteration_timeout` counts as a failure
+of the test libtest showed as running, or of a
 `<binary>: test binary did not finish` record when no test was named.
+A `cargo test` run that exits with a failure that none of this
+explains adds a `cargo test: failed with no failing test identified`
+record. cargo runs with `CARGO_TERM_QUIET=false`, so a project's
+`[term] quiet` setting cannot switch libtest to terse output.
 Tests with the same path in different binaries are kept apart as
 `name [binary]`.
 

@@ -94,9 +94,16 @@ with numeric evidence for `reliability_pct`, `passes`, and `failures`.
   compile error is returned as `FlakyError::SubprocessFailed` right
   away instead of being retried every iteration.
 - Only the `test <name> ... ok | FAILED | ignored` lines listed after
-  each `running N tests` header are counted. Output that a failing
-  test printed (shown in the failure details) is never parsed as a
-  result. Ignored tests are not recorded.
+  each `running N tests` header, up to `failures:` or `test result:`,
+  are counted. Output that a failing test printed (shown in the failure
+  details) is never parsed as a result. Ignored tests are not recorded.
+- Failures are cross-checked against libtest's closing `failures:` list
+  and the failed count in `test result:`, so a failure still counts if
+  its outcome line is missing. cargo runs with `CARGO_TERM_QUIET=false`,
+  so a `[term] quiet` setting cannot switch libtest to terse output.
+- A `cargo test` that exits with a failure no test accounts for (a
+  `harness = false` target, say) is recorded as
+  `cargo test: failed with no failing test identified`.
 - `#[should_panic]` tests are recorded under their plain path (libtest's
   ` - should panic` suffix is dropped).
 - When two test binaries contain the same test path (for example

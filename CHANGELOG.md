@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-12
+
+A test that fails every run could be reported as passing.
+
+### Fixed
+
+- With `CARGO_TERM_QUIET=true`, or `[term] quiet = true` in the
+  project's cargo config, libtest prints terse `.`/`F` output with no
+  test names. No outcome was read, and the scan passed. cargo now runs
+  with `CARGO_TERM_QUIET=false`, and failures are also read from
+  libtest's closing `failures:` list.
+- The outcome list ended at the first blank line, so a test that wrote
+  a blank line to the real stdout hid every result after it, failures
+  included. The list now ends only at `failures:` or `test result:`.
+- A `test result:` failed count above the failures found adds a
+  `<binary>: failed tests not named in the output` record.
+- A `cargo test` run that exits with a failure that no recorded failure
+  explains (a `harness = false` target, for example) adds a failing
+  `cargo test: failed with no failing test identified` record instead
+  of passing.
+
+### Changed
+
+- Depends on `dev-report` 0.9.9 from crates.io instead of a sibling
+  checkout.
+
+[0.9.3]: https://github.com/jamesgober/dev-flaky/releases/tag/v0.9.3
+
 ## [0.9.2] - 2026-10-09
 
 libtest parsing and crash/hang handling fixes from a review pass, plus
