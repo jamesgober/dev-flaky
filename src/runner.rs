@@ -17,11 +17,22 @@
 //! ```
 //!
 //! Outcome lines are read only from the list that follows
-//! `running N tests`, up to the first blank line. Everything after that
-//! (captured test output) is skipped until `test result:`, so a test that
-//! prints something looking like `test x ... ok` cannot create a phantom
-//! entry. A block that never reaches `test result:` belongs to a test
-//! binary that crashed or was killed by the iteration timeout.
+//! `running N tests`, up to `failures:` or `test result:`. A blank line
+//! does not end the list, because a test that writes to the real stdout
+//! (a child process with inherited stdout, say) can print one in the
+//! middle of it. Captured output after `failures:` is skipped, so a test
+//! that prints something looking like `test x ... ok` cannot create a
+//! phantom entry. The names in libtest's closing `failures:` list, and
+//! the failed count in `test result:`, are checked against the outcomes
+//! read, so a failure is never lost even when the per-test lines are
+//! missing (terse output). A block that never reaches `test result:`
+//! belongs to a test binary that crashed or was killed by the iteration
+//! timeout.
+//!
+//! cargo is run with `CARGO_TERM_QUIET=false`, so a `[term] quiet`
+//! setting in the project cannot switch libtest to terse output. A
+//! `cargo test` that exits with a failure that no test accounts for is
+//! recorded as a failing entry of its own.
 //!
 //! cargo prints a matching `Running ...` / `Doc-tests ...` line on stderr
 //! for each binary. Those labels are used to tell apart tests that share
@@ -60,7 +71,8 @@ pub(crate) fn run(cfg: &FlakyRun) -> Result<FlakyResult, FlakyError> {
             continue;
         }
 
-        acc.add_iteration(&sections, &parse_section_labels(&output.stderr));
+        let failures = acc.add_iteration(&sections, &parse_section_labels(&output.stderr));
+        acc.add_exit_status(output.success || failures > 0);
         iterations_completed += 1;
     }
 
@@ -106,6 +118,9 @@ fn detect_cargo() -> Result<(), FlakyError> {
 fn cargo_test_command(cfg: &FlakyRun) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.args(["test", "--no-fail-fast"]);
+    // A `[term] quiet = true` in the project's cargo config makes libtest
+    // print terse `.`/`F` output with no test names. Override it.
+    cmd.env("CARGO_TERM_QUIET", "false");
     if cfg.workspace_flag() {
         cmd.arg("--workspace");
     }
@@ -333,30 +348,37 @@ pub(crate) struct Section {
     /// The block reached `test result:`. `false` means the binary
     /// crashed or was killed.
     pub(crate) finished: bool,
+    /// Failures that libtest counted (in its closing `failures:` list or
+    /// in `test result:`) but that no outcome line named.
+    pub(crate) unidentified_failures: u32,
 }
 
 #[derive(PartialEq, Eq)]
 enum State {
     /// Between blocks.
     Outside,
-    /// Reading `test x ... outcome` lines.
+    /// Reading `test x ... outcome` lines, until `failures:` or
+    /// `test result:`.
     List,
-    /// Blank line after the list; the next line tells whether failure
-    /// details follow, the summary follows, or (when the binary died)
-    /// the next binary's header follows.
-    AfterList,
     /// Failure details / captured output, until `test result:`.
     Details,
+    /// libtest's closing `failures:` list: one indented name per line.
+    FailureNames,
 }
 
 pub(crate) fn parse_libtest(stdout: &str) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
     let mut state = State::Outside;
+    // Names from the closing `failures:` list of the current block.
+    let mut failure_names: Vec<String> = Vec::new();
     for raw in stdout.lines() {
         let line = raw.trim_end();
-        if state != State::Details && is_running_header(line) {
+        if !matches!(state, State::Details | State::FailureNames) && is_running_header(line) {
             // A new header before the previous block's summary means the
             // previous binary died.
+            if let Some(prev) = sections.last_mut() {
+                settle_failures(prev, &mut failure_names, None);
+            }
             sections.push(Section::default());
             state = State::List;
             continue;
@@ -364,25 +386,35 @@ pub(crate) fn parse_libtest(stdout: &str) -> Vec<Section> {
         let Some(current) = sections.last_mut() else {
             continue;
         };
-        if line.starts_with("test result: ") {
+        if let Some(summary) = line.strip_prefix("test result: ") {
             if state != State::Outside {
                 current.finished = true;
+                settle_failures(current, &mut failure_names, failed_count(summary));
             }
             state = State::Outside;
             continue;
         }
         match state {
             State::List => {}
-            State::AfterList => {
-                if !line.is_empty() {
-                    state = State::Details;
+            State::Details => {
+                if line == "failures:" {
+                    state = State::FailureNames;
                 }
                 continue;
             }
-            State::Outside | State::Details => continue,
+            State::FailureNames => {
+                match line.strip_prefix("    ") {
+                    Some(name) if !name.trim().is_empty() => {
+                        failure_names.push(normalize_name(name.trim()));
+                    }
+                    _ => state = State::Details,
+                }
+                continue;
+            }
+            State::Outside => continue,
         }
-        if line.is_empty() {
-            state = State::AfterList;
+        if line == "failures:" {
+            state = State::Details;
             continue;
         }
         let Some(rest) = line.strip_prefix("test ") else {
@@ -409,7 +441,46 @@ pub(crate) fn parse_libtest(stdout: &str) -> Vec<Section> {
         };
         current.outcomes.push((normalize_name(name), kind));
     }
+    if let Some(last) = sections.last_mut() {
+        settle_failures(last, &mut failure_names, None);
+    }
     sections
+}
+
+/// Make the block's failures agree with what libtest said about them:
+/// every name in the closing `failures:` list becomes a `Fail` outcome
+/// if no outcome line recorded one, and a `test result:` failed count
+/// above the failures known is kept as unidentified failures.
+fn settle_failures(section: &mut Section, names: &mut Vec<String>, failed: Option<u32>) {
+    for name in names.drain(..) {
+        let known = section
+            .outcomes
+            .iter()
+            .any(|(n, o)| *n == name && *o == Outcome::Fail);
+        if !known {
+            section.outcomes.retain(|(n, _)| *n != name);
+            section.outcomes.push((name, Outcome::Fail));
+        }
+    }
+    if let Some(failed) = failed {
+        let known = section
+            .outcomes
+            .iter()
+            .filter(|(_, o)| *o == Outcome::Fail)
+            .count();
+        let known = u32::try_from(known).unwrap_or(u32::MAX);
+        section.unidentified_failures = failed.saturating_sub(known);
+    }
+}
+
+/// The `N failed` count of a `test result:` line (without the prefix):
+/// `FAILED. 3 passed; 2 failed; 0 ignored; ...`.
+fn failed_count(summary: &str) -> Option<u32> {
+    summary.split(';').find_map(|part| {
+        let part = part.trim();
+        let part = part.rsplit(". ").next().unwrap_or(part);
+        part.strip_suffix(" failed")?.trim().parse().ok()
+    })
 }
 
 /// `running 3 tests` / `running 1 test`.
@@ -489,14 +560,38 @@ pub(crate) struct Accumulator {
     /// Per binary: (iterations that finished or were attributed to a
     /// named test, iterations that ended early with no test to blame).
     unfinished: BTreeMap<usize, (u32, u32)>,
+    /// Per binary: (iterations without, iterations with) failures that
+    /// libtest counted but no test line named.
+    unidentified: BTreeMap<usize, (u32, u32)>,
+    /// (iterations where `cargo test` succeeded or a failure was
+    /// recorded, iterations where it failed and nothing explained it).
+    exit_unexplained: (u32, u32),
 }
 
 impl Accumulator {
     pub(crate) fn is_empty(&self) -> bool {
-        self.counts.is_empty() && self.unfinished.values().all(|(_, bad)| *bad == 0)
+        self.counts.is_empty()
+            && self.unfinished.values().all(|(_, bad)| *bad == 0)
+            && self.unidentified.values().all(|(_, bad)| *bad == 0)
+            && self.exit_unexplained.1 == 0
     }
 
-    pub(crate) fn add_iteration(&mut self, sections: &[Section], labels: &[String]) {
+    /// Record whether this iteration's exit status is accounted for:
+    /// `true` when `cargo test` succeeded or at least one failure was
+    /// recorded for the iteration.
+    pub(crate) fn add_exit_status(&mut self, explained: bool) {
+        let e = &mut self.exit_unexplained;
+        if explained {
+            e.0 = e.0.saturating_add(1);
+        } else {
+            e.1 = e.1.saturating_add(1);
+        }
+    }
+
+    /// Add one iteration's blocks. Returns how many failures were
+    /// recorded for it.
+    pub(crate) fn add_iteration(&mut self, sections: &[Section], labels: &[String]) -> u32 {
+        let mut failures: u32 = 0;
         // Labels line up with blocks only when cargo announced exactly
         // one binary per block (a `harness = false` target prints no
         // libtest block).
@@ -514,6 +609,14 @@ impl Accumulator {
                 let e = self.counts.entry((i, name.clone())).or_insert((0, 0));
                 e.0 = e.0.saturating_add(delta.0);
                 e.1 = e.1.saturating_add(delta.1);
+                failures = failures.saturating_add(delta.1);
+            }
+            let un = self.unidentified.entry(i).or_insert((0, 0));
+            if s.unidentified_failures > 0 {
+                un.1 = un.1.saturating_add(1);
+                failures = failures.saturating_add(s.unidentified_failures);
+            } else {
+                un.0 = un.0.saturating_add(1);
             }
             let fin = self.unfinished.entry(i).or_insert((0, 0));
             if s.finished {
@@ -529,14 +632,17 @@ impl Accumulator {
                 }
                 let e = self.counts.entry((i, name.clone())).or_insert((0, 0));
                 e.1 = e.1.saturating_add(1);
+                failures = failures.saturating_add(1);
                 blamed = true;
             }
             if blamed {
                 fin.0 = fin.0.saturating_add(1);
             } else {
                 fin.1 = fin.1.saturating_add(1);
+                failures = failures.saturating_add(1);
             }
         }
+        failures
     }
 
     pub(crate) fn finish(self) -> Vec<TestReliability> {
@@ -581,6 +687,24 @@ impl Accumulator {
                 name: format!("{}: test binary did not finish", label_of(*i)),
                 passes: *ok,
                 failures: *bad,
+            });
+        }
+        for (i, (ok, bad)) in &self.unidentified {
+            if *bad == 0 {
+                continue;
+            }
+            tests.push(TestReliability {
+                name: format!("{}: failed tests not named in the output", label_of(*i)),
+                passes: *ok,
+                failures: *bad,
+            });
+        }
+        let (ok, bad) = self.exit_unexplained;
+        if bad > 0 {
+            tests.push(TestReliability {
+                name: "cargo test: failed with no failing test identified".to_string(),
+                passes: ok,
+                failures: bad,
             });
         }
         tests.sort_by(|a, b| a.name.cmp(&b.name));
@@ -933,5 +1057,82 @@ hello world
         let acc = Accumulator::default();
         assert!(acc.is_empty());
         assert!(acc.finish().is_empty());
+    }
+
+    fn single_iteration(stdout: &str, success: bool) -> Vec<TestReliability> {
+        let mut acc = Accumulator::default();
+        let failures = acc.add_iteration(&parse_libtest(stdout), &[]);
+        acc.add_exit_status(success || failures > 0);
+        acc.finish()
+    }
+
+    #[test]
+    fn blank_line_in_the_list_does_not_hide_a_failure() {
+        // A test wrote a blank line to the real stdout before the
+        // failing test's result line.
+        let stdout = "\nrunning 2 tests\ntest prints_blank ... ok\n\ntest always_fails ... FAILED\n\nfailures:\n\n---- always_fails stdout ----\n\nthread 'always_fails' panicked at src/lib.rs:9:5:\nboom\n\n\nfailures:\n    always_fails\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n";
+        let tests = single_iteration(stdout, false);
+        let fails = tests.iter().find(|t| t.name == "always_fails").unwrap();
+        assert_eq!((fails.passes, fails.failures), (0, 1));
+        assert_eq!(tests.len(), 2);
+    }
+
+    #[test]
+    fn terse_output_still_records_failures() {
+        // libtest terse output (`[term] quiet = true` or
+        // `CARGO_TERM_QUIET=true`): no per-test lines.
+        let stdout = "\nrunning 1 test\nF\nfailures:\n\n---- always_fails stdout ----\n\nthread 'always_fails' panicked at src/lib.rs:2:5:\nboom\n\n\nfailures:\n    always_fails\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n";
+        let tests = single_iteration(stdout, false);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "always_fails");
+        assert_eq!((tests[0].passes, tests[0].failures), (0, 1));
+    }
+
+    #[test]
+    fn failed_count_without_names_is_recorded() {
+        let stdout = "\nrunning 2 tests\n.F\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let sections = parse_libtest(stdout);
+        assert_eq!(sections[0].unidentified_failures, 1);
+        let tests = single_iteration(stdout, false);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "#1: failed tests not named in the output");
+        assert_eq!(tests[0].failures, 1);
+    }
+
+    #[test]
+    fn failing_exit_with_no_failure_found_is_recorded() {
+        // A `harness = false` target that failed prints no libtest block;
+        // the other binary passed.
+        let stdout = "\nrunning 1 test\ntest fine ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n";
+        let tests = single_iteration(stdout, false);
+        let synthetic = tests
+            .iter()
+            .find(|t| t.name == "cargo test: failed with no failing test identified")
+            .unwrap();
+        assert_eq!((synthetic.passes, synthetic.failures), (0, 1));
+        // A successful run adds no such record.
+        let tests = single_iteration(stdout, true);
+        assert_eq!(tests.len(), 1);
+    }
+
+    #[test]
+    fn failed_count_is_read_from_the_summary() {
+        assert_eq!(
+            failed_count("FAILED. 3 passed; 2 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s"),
+            Some(2)
+        );
+        assert_eq!(failed_count("ok. 1 passed; 0 failed; 0 ignored"), Some(0));
+        assert_eq!(failed_count("garbage"), None);
+    }
+
+    #[test]
+    fn cargo_test_command_forces_full_output() {
+        let cfg = FlakyRun::new("x", "0.1.0");
+        let cmd = cargo_test_command(&cfg);
+        let quiet = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "CARGO_TERM_QUIET")
+            .and_then(|(_, v)| v);
+        assert_eq!(quiet, Some(std::ffi::OsStr::new("false")));
     }
 }
